@@ -2,24 +2,34 @@
 import os
 import shlex
 import subprocess
+import readline
 from shell_builtins import BUILTINS, run_builtin
 from history import History
 from sysmonitor import SystemMonitor
+from autocomplete import suggest_commands, suggest_path, fuzzy_suggest
 
 history = History()
 monitor = SystemMonitor()
 
+# TAB Auto‑Completion
+def complete(text, state):
+    results = suggest_commands(text) + suggest_path(text)
+    try:
+        return results[state]
+    except:
+        return None
+
+readline.parse_and_bind("tab: complete")
+readline.set_completer(complete)
+
 def execute_command(command):
-    # History support
     if command.strip():
         history.add(command)
 
-    # !! repeat last command
+    # history repeat
     if command == "!!":
         command = history.last()
-        print(f"Re-running: {command}")
 
-    # !n run specific history command
     if command.startswith("!"):
         try:
             index = int(command[1:])
@@ -32,74 +42,66 @@ def execute_command(command):
     if not tokens:
         return
 
-    # Built-in command
+    # Fuzzy suggestion if mistyped command
+    if tokens[0] not in BUILTINS and "|" not in tokens:
+        suggestion = fuzzy_suggest(tokens[0])
+        if suggestion:
+            print(f"Did you mean → {suggestion[0]} ?")
+
+    # built‑ins
     if tokens[0] in BUILTINS:
         return run_builtin(tokens, history, monitor)
 
-    # I/O Redirection
+    # Redirection
     if ">" in tokens or "<" in tokens or ">>" in tokens:
         return executor_redirect(tokens)
 
-    # Pipeline Support |
+    # Piping
     if "|" in tokens:
         return executor_pipe(tokens)
 
+    # External commands
     try:
         subprocess.run(tokens)
     except FileNotFoundError:
         print("Command not found")
 
 def executor_pipe(tokens):
-    cmds = []
-    temp = []
+    cmds, temp = [], []
 
-    for token in tokens:
-        if token == "|":
-            cmds.append(temp)
-            temp = []
-        else:
-            temp.append(token)
+    for t in tokens:
+        if t == "|": cmds.append(temp); temp=[]
+        else: temp.append(t)
     cmds.append(temp)
 
-    prev = None
+    prev=None
     for cmd in cmds:
-        if prev is None:
-            prev = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-        else:
-            prev = subprocess.Popen(cmd, stdin=prev.stdout, stdout=subprocess.PIPE)
-    output = prev.communicate()[0]
-    print(output.decode())
+        prev = subprocess.Popen(cmd, stdin=None if prev is None else prev.stdout, stdout=subprocess.PIPE)
+    print(prev.communicate()[0].decode())
 
 def executor_redirect(tokens):
     if ">" in tokens:
-        index = tokens.index(">")
-        outfile = tokens[index + 1]
-        cmd = tokens[:index]
-        with open(outfile, "w") as f:
-            subprocess.run(cmd, stdout=f)
+        index=tokens.index(">"); cmd=tokens[:index]; file=tokens[index+1]
+        with open(file,"w") as f: subprocess.run(cmd,stdout=f)
+
     elif ">>" in tokens:
-        index = tokens.index(">>")
-        outfile = tokens[index + 1]
-        cmd = tokens[:index]
-        with open(outfile, "a") as f:
-            subprocess.run(cmd, stdout=f)
+        index=tokens.index(">>"); cmd=tokens[:index]; file=tokens[index+1]
+        with open(file,"a") as f: subprocess.run(cmd,stdout=f)
+
     elif "<" in tokens:
-        index = tokens.index("<")
-        infile = tokens[index + 1]
-        cmd = tokens[:index]
-        with open(infile, "r") as f:
-            subprocess.run(cmd, stdin=f)
+        index=tokens.index("<"); cmd=tokens[:index]; file=tokens[index+1]
+        with open(file,"r") as f: subprocess.run(cmd,stdin=f)
 
 def shell_loop():
     while True:
         try:
-            current = os.getcwd()
-            prompt = f"\033[92mShellXplorer\033[0m:\033[94m{current}\033[0m $ "
-            command = input(prompt)
+            cur=os.getcwd()
+            prompt=f"\033[92mShellXplorer\033[0m:\033[94m{cur}\033[0m $ "
+            command=input(prompt)
             execute_command(command)
-        except (KeyboardInterrupt, EOFError):
-            print("\nExit Shell")
+        except (KeyboardInterrupt,EOFError):
+            print("\nExiting ShellXplorer..")
             break
 
-if __name__ == "__main__":
+if __name__=="__main__":
     shell_loop()
