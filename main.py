@@ -1,58 +1,105 @@
 #!/usr/bin/env python3
-"""
-ShellXplorer - main REPL
-"""
-import sys
-import readline
-from parser import parse_command
-from executor import execute_parsed
-from jobs import check_background_jobs, list_jobs, bring_job_foreground
-from builtins import run_builtin, BUILTINS
-from completer import setup_readline
+import os
+import shlex
+import subprocess
+from shell_builtins import BUILTINS, run_builtin
+from history import History
+from sysmonitor import SystemMonitor
 
-PROMPT = "ShellXplorer> "
+history = History()
+monitor = SystemMonitor()
 
-def main():
-    print("🔥 ShellXplorer - Python educational shell")
-    setup_readline()  # enable tab completion
+def execute_command(command):
+    # History support
+    if command.strip():
+        history.add(command)
+
+    # !! repeat last command
+    if command == "!!":
+        command = history.last()
+        print(f"Re-running: {command}")
+
+    # !n run specific history command
+    if command.startswith("!"):
+        try:
+            index = int(command[1:])
+            command = history.get(index)
+        except:
+            print("Invalid history reference")
+            return
+
+    tokens = shlex.split(command)
+    if not tokens:
+        return
+
+    # Built-in command
+    if tokens[0] in BUILTINS:
+        return run_builtin(tokens, history, monitor)
+
+    # I/O Redirection
+    if ">" in tokens or "<" in tokens or ">>" in tokens:
+        return executor_redirect(tokens)
+
+    # Pipeline Support |
+    if "|" in tokens:
+        return executor_pipe(tokens)
+
     try:
-        while True:
-            check_background_jobs()
-            try:
-                line = input(PROMPT)
-            except EOFError:
-                print()  # newline on Ctrl-D
-                break
-            if not line.strip():
-                continue
+        subprocess.run(tokens)
+    except FileNotFoundError:
+        print("Command not found")
 
-            parsed = parse_command(line)
-            if parsed is None:
-                continue
+def executor_pipe(tokens):
+    cmds = []
+    temp = []
 
-            # If single command and builtin, run builtin (supports jobs/fg/kill)
-            if parsed["pipe_count"] == 0:
-                cmd = parsed["commands"][0]
-                if cmd and cmd[0] in BUILTINS:
-                    try:
-                        handled = run_builtin(cmd, parsed)
-                        if handled is True:
-                            continue
-                    except SystemExit:
-                        raise
-                    except Exception as e:
-                        print(f"❌ Builtin error: {e}")
-                        continue
+    for token in tokens:
+        if token == "|":
+            cmds.append(temp)
+            temp = []
+        else:
+            temp.append(token)
+    cmds.append(temp)
 
-            # otherwise execute (could be external or pipeline)
-            execute_parsed(parsed)
+    prev = None
+    for cmd in cmds:
+        if prev is None:
+            prev = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        else:
+            prev = subprocess.Popen(cmd, stdin=prev.stdout, stdout=subprocess.PIPE)
+    output = prev.communicate()[0]
+    print(output.decode())
 
-    except KeyboardInterrupt:
-        print("\nType 'exit' to quit.")
-    except SystemExit:
-        pass
-    finally:
-        print("Goodbye.")
+def executor_redirect(tokens):
+    if ">" in tokens:
+        index = tokens.index(">")
+        outfile = tokens[index + 1]
+        cmd = tokens[:index]
+        with open(outfile, "w") as f:
+            subprocess.run(cmd, stdout=f)
+    elif ">>" in tokens:
+        index = tokens.index(">>")
+        outfile = tokens[index + 1]
+        cmd = tokens[:index]
+        with open(outfile, "a") as f:
+            subprocess.run(cmd, stdout=f)
+    elif "<" in tokens:
+        index = tokens.index("<")
+        infile = tokens[index + 1]
+        cmd = tokens[:index]
+        with open(infile, "r") as f:
+            subprocess.run(cmd, stdin=f)
+
+def shell_loop():
+    while True:
+        try:
+            current = os.getcwd()
+            prompt = f"\033[92mShellXplorer\033[0m:\033[94m{current}\033[0m $ "
+            command = input(prompt)
+            execute_command(command)
+        except (KeyboardInterrupt, EOFError):
+            print("\nExit Shell")
+            break
 
 if __name__ == "__main__":
-    main()
+    shell_loop()
